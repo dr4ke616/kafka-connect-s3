@@ -122,6 +122,14 @@ public class S3FilesReader implements Iterable<S3SourceRecord> {
 		return matcher.group("topic");
 	}
 
+	private void closeObject(S3Object object) {
+		try {
+			object.close();
+		} catch (IOException e) {
+			throw new AmazonClientException(e);
+		}
+	}
+
 	public Iterator<S3SourceRecord> readAll() {
 		return new Iterator<S3SourceRecord>() {
 			String currentKey;
@@ -189,11 +197,14 @@ public class S3FilesReader implements Iterable<S3SourceRecord> {
 					} else {
 						log.debug("Now reading from {}", currentKey);
 						S3RecordsReader reader = makeReader.get();
-						InputStream content = getContent(s3Client.getObject(config.bucket, currentKey));
+						S3Object obj = s3Client.getObject(config.bucket, currentKey);
+						InputStream content = getContent(obj);
 						iterator = parseKey(currentKey, (topic, partition, startOffset) -> {
 							reader.init(topic,partition, content, startOffset);
 							return reader.readAll(topic, partition, content, startOffset);
 						});
+						if (!iterator.hasNext())
+							closeObject(obj);
 					}
 				} catch (IOException e) {
 					throw new AmazonClientException(e);
@@ -239,6 +250,7 @@ public class S3FilesReader implements Iterable<S3SourceRecord> {
 							reader.init(topic, partition, getContent(object), startOffset);
 							return null;
 						});
+						closeObject(object);
 					}
 				}
 
@@ -258,6 +270,7 @@ public class S3FilesReader implements Iterable<S3SourceRecord> {
 				for (int i = 0; i < recordSkipCount; i++) {
 					iterator.next();
 				}
+				closeObject(object);
 			}
 
 			@Override
@@ -322,8 +335,12 @@ public class S3FilesReader implements Iterable<S3SourceRecord> {
 	}
 
 	private ChunksIndex getChunksIndex(String key) throws IOException {
-		return indexParser.readValue(new InputStreamReader(s3Client.getObject(config.bucket, DATA_SUFFIX.matcher(key)
-			.replaceAll(".index.json")).getObjectContent()));
+		S3Object object = s3Client
+			.getObject(config.bucket, DATA_SUFFIX.matcher(key).replaceAll(".index.json"));
+		ChunksIndex index =
+			indexParser.readValue(new InputStreamReader(object.getObjectContent()));
+		closeObject(object);
+		return index;
 	}
 
 	/**
